@@ -44,6 +44,18 @@ def visualize_text_overview(data):
     # Visualization 2: Content statistics
     _plot_content_statistics(data, output_dir)
     
+    # Visualization 3: Quote hierarchy
+    visualize_quote_hierarchy(data, output_dir)
+    
+    # Visualization 4: Subcategory distribution
+    visualize_subcategory_distribution(data, output_dir)
+    
+    # Visualization 5: Top sources in citations
+    visualize_top_sources(data, output_dir)
+    
+    # Visualization 6: Top authors in citations
+    visualize_top_authors(data, output_dir)
+    
     logger.info(f"Visualizations saved to {output_dir}/")
 
 
@@ -76,23 +88,29 @@ def _plot_text_length_distribution(data, output_dir):
 
 def _plot_content_statistics(data, output_dir):
     """
-    Plot basic content statistics from the dataset.
+    Plot content statistics from the dataset, including hierarchical metrics.
     
     Args:
         data (pd.DataFrame): Dataset with text content
         output_dir (str): Directory to save the plot
     """
     
-    # Calculate basic statistics
+    # Calculate statistics
+    quotes = data[data['type'] == 'quote'] if 'type' in data.columns else pd.DataFrame()
+    subcategories = data[data['type'] == 'subcategory'] if 'type' in data.columns else pd.DataFrame()
+    categories = data[data['type'] == 'category'] if 'type' in data.columns else pd.DataFrame()
+    
     stats = {
         'Total Records': len(data),
-        'Total Characters': data.get('length', pd.Series([0])).sum() if 'length' in data.columns else 0,
-        'Avg Length': data.get('length', pd.Series([0])).mean() if 'length' in data.columns else 0,
-        'Max Length': data.get('length', pd.Series([0])).max() if 'length' in data.columns else 0
+        'Categories': len(categories),
+        'Subcategories': len(subcategories),
+        'Quotes': len(quotes),
+        'With Citations': data.get('has_citation', pd.Series([False])).sum(),
+        'With Links': data.get('has_links', pd.Series([False])).sum(),
     }
     
     # Create bar plot of statistics
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(12, 6))
     bars = plt.bar(range(len(stats)), list(stats.values()), alpha=0.7)
     plt.xticks(range(len(stats)), list(stats.keys()), rotation=45, ha='right')
     plt.ylabel('Count')
@@ -121,38 +139,216 @@ def _plot_content_statistics(data, output_dir):
             logger.info(f"  {key}: {value:,}")
 
 
-def visualize_section_breakdown(data, section_column='section'):
+def visualize_quote_hierarchy(data, output_dir='output'):
     """
-    Visualize the breakdown of content by sections.
+    Visualize the distribution of quotes across hierarchical levels.
     
     Args:
-        data (pd.DataFrame): Dataset with section information
-        section_column (str): Name of the column containing section labels
+        data (pd.DataFrame): Dataset with 'type' and 'quote_level' columns
+        output_dir (str): Directory to save the plot
     """
     
-    if section_column not in data.columns:
-        logger.warning(f"'{section_column}' column not found. Skipping section breakdown.")
+    if 'quote_level' not in data.columns:
+        logger.warning("'quote_level' column not found. Skipping hierarchy visualization.")
         return
     
-    output_dir = 'output'
-    os.makedirs(output_dir, exist_ok=True)
+    quotes = data[data['type'] == 'quote'].copy()
     
-    # Count records per section
-    section_counts = data[section_column].value_counts()
+    if len(quotes) == 0:
+        logger.warning("No quotes found. Skipping hierarchy visualization.")
+        return
     
-    plt.figure(figsize=(12, 6))
-    section_counts.plot(kind='bar', alpha=0.7)
-    plt.xlabel('Section')
-    plt.ylabel('Number of Records')
-    plt.title('Distribution of Records by Section')
-    plt.xticks(rotation=45, ha='right')
+    # Count quotes by level
+    level_counts = quotes['quote_level'].value_counts().sort_index()
+    
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(level_counts.index, level_counts.values, alpha=0.7, color='steelblue')
+    plt.xlabel('Quote Level')
+    plt.ylabel('Number of Quotes')
+    plt.title('Distribution of Quotes Across Hierarchical Levels')
     plt.grid(True, alpha=0.3, axis='y')
     
-    output_path = os.path.join(output_dir, 'section_breakdown.png')
+    # Add value labels on bars
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height,
+                f'{int(height)}',
+                ha='center', va='bottom')
+    
+    output_path = os.path.join(output_dir, 'quote_hierarchy.png')
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    logger.info(f"Saved section breakdown to {output_path}")
+    logger.info(f"Saved quote hierarchy visualization to {output_path}")
+
+
+def visualize_subcategory_distribution(data, output_dir='output', top_n=15):
+    """
+    Visualize the distribution of quotes across subcategories.
+    
+    Args:
+        data (pd.DataFrame): Dataset with 'subcategory' column
+        output_dir (str): Directory to save the plot
+        top_n (int): Number of top subcategories to display
+    """
+    
+    if 'subcategory' not in data.columns or 'type' not in data.columns:
+        logger.warning("Required columns not found. Skipping subcategory visualization.")
+        return
+    
+    quotes = data[data['type'] == 'quote'].copy()
+    
+    if len(quotes) == 0:
+        logger.warning("No quotes found. Skipping subcategory visualization.")
+        return
+    
+    # Filter out None values and count quotes by subcategory
+    quotes_with_subcat = quotes[quotes['subcategory'].notna()]
+    
+    if len(quotes_with_subcat) == 0:
+        logger.warning("No quotes with subcategories found. Skipping visualization.")
+        return
+    
+    subcat_counts = quotes_with_subcat['subcategory'].value_counts().head(top_n)
+    
+    plt.figure(figsize=(12, 8))
+    bars = plt.barh(range(len(subcat_counts)), subcat_counts.values, alpha=0.7, color='coral')
+    
+    # Clean up subcategory names (remove extra whitespace from ToC formatting)
+    labels = []
+    for name in subcat_counts.index:
+        # Remove extra spaces and truncate if too long
+        cleaned = ' '.join(str(name).split())  # Remove multiple spaces
+        if len(cleaned) > 50:
+            cleaned = cleaned[:50] + '...'
+        labels.append(cleaned)
+    
+    plt.yticks(range(len(subcat_counts)), labels)
+    
+    plt.xlabel('Number of Quotes')
+    plt.title(f'Top {top_n} Subcategories by Quote Count')
+    plt.grid(True, alpha=0.3, axis='x')
+    
+    # Add value labels on bars
+    for i, bar in enumerate(bars):
+        width = bar.get_width()
+        plt.text(width, bar.get_y() + bar.get_height()/2.,
+                f' {int(width)}',
+                ha='left', va='center')
+    
+    output_path = os.path.join(output_dir, 'subcategory_distribution.png')
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    logger.info(f"Saved subcategory distribution to {output_path}")
+
+
+def visualize_top_sources(data, output_dir='output', top_n=15):
+    """
+    Visualize the top sources used in citations.
+    
+    Args:
+        data (pd.DataFrame): Dataset with 'citation_source' column
+        output_dir (str): Directory to save the plot
+        top_n (int): Number of top sources to display
+    """
+    
+    if 'citation_source' not in data.columns:
+        logger.warning("'citation_source' column not found. Skipping source visualization.")
+        return
+    
+    # Filter to entries with citations
+    citations_with_source = data[data['citation_source'].notna()]
+    
+    if len(citations_with_source) == 0:
+        logger.warning("No citations with sources found. Skipping source visualization.")
+        return
+    
+    # Count occurrences of each source
+    source_counts = citations_with_source['citation_source'].value_counts().head(top_n)
+    
+    plt.figure(figsize=(12, 8))
+    bars = plt.barh(range(len(source_counts)), source_counts.values, alpha=0.7, color='mediumseagreen')
+    
+    # Clean up source names
+    labels = []
+    for source in source_counts.index:
+        cleaned = str(source).strip()
+        if len(cleaned) > 60:
+            cleaned = cleaned[:60] + '...'
+        labels.append(cleaned)
+    
+    plt.yticks(range(len(source_counts)), labels)
+    plt.xlabel('Number of Citations')
+    plt.title(f'Top {top_n} Sources Used in Citations')
+    plt.grid(True, alpha=0.3, axis='x')
+    
+    # Add value labels on bars
+    for i, bar in enumerate(bars):
+        width = bar.get_width()
+        plt.text(width, bar.get_y() + bar.get_height()/2.,
+                f' {int(width)}',
+                ha='left', va='center')
+    
+    output_path = os.path.join(output_dir, 'top_sources_citations.png')
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    logger.info(f"Saved top sources visualization to {output_path}")
+
+
+def visualize_top_authors(data, output_dir='output', top_n=15):
+    """
+    Visualize the top authors used in citations.
+    
+    Args:
+        data (pd.DataFrame): Dataset with 'citation_author' column
+        output_dir (str): Directory to save the plot
+        top_n (int): Number of top authors to display
+    """
+    
+    if 'citation_author' not in data.columns:
+        logger.warning("'citation_author' column not found. Skipping author visualization.")
+        return
+    
+    # Filter to entries with citations
+    citations_with_author = data[data['citation_author'].notna()]
+    
+    if len(citations_with_author) == 0:
+        logger.warning("No citations with authors found. Skipping author visualization.")
+        return
+    
+    # Count occurrences of each author
+    author_counts = citations_with_author['citation_author'].value_counts().head(top_n)
+    
+    plt.figure(figsize=(12, 8))
+    bars = plt.barh(range(len(author_counts)), author_counts.values, alpha=0.7, color='steelblue')
+    
+    # Clean up author names
+    labels = []
+    for author in author_counts.index:
+        cleaned = str(author).strip()
+        if len(cleaned) > 50:
+            cleaned = cleaned[:50] + '...'
+        labels.append(cleaned)
+    
+    plt.yticks(range(len(author_counts)), labels)
+    plt.xlabel('Number of Citations')
+    plt.title(f'Top {top_n} Authors in Citations')
+    plt.grid(True, alpha=0.3, axis='x')
+    
+    # Add value labels on bars
+    for i, bar in enumerate(bars):
+        width = bar.get_width()
+        plt.text(width, bar.get_y() + bar.get_height()/2.,
+                f' {int(width)}',
+                ha='left', va='center')
+    
+    output_path = os.path.join(output_dir, 'top_authors_citations.png')
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    logger.info(f"Saved top authors visualization to {output_path}")
 
 
 def generate_summary_report(data, output_path='output/summary_report.txt'):

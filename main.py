@@ -22,8 +22,12 @@ logging.basicConfig(
 USE_VISUALIZATIONS = True       # Generate exploratory plots and result visualizations
 EXPORT_TO_OBSIDIAN = False      # Export processed data in Obsidian-compatible format
 
+USE_SAMPLE_NUMBER_OF_PAGES_PHIL = None  # Number of pages to load for testing. Set to None to load entire file. Set to integer (e.g., 10) to load only first X pages
+
 # Data file paths
 DATA_PATH = 'data/Phil.odt'     # Main philosophical text dataset (ODT format)
+
+
 
 # =============================================================================
 # OUTPUT CONFIGURATION
@@ -32,7 +36,7 @@ DATA_PATH = 'data/Phil.odt'     # Main philosophical text dataset (ODT format)
 OUTPUT_DIR = 'output'           # Directory for analysis results and exports
 
 
-def load_data(file_path):
+def load_data(file_path, max_pages=None):
     """
     Load data from an ODT file.
     
@@ -41,6 +45,8 @@ def load_data(file_path):
     
     Args:
         file_path (str): Path to the ODT file to load
+        max_pages (int, optional): Maximum number of pages to load for testing.
+                                   If None, loads entire file.
         
     Returns:
         pd.DataFrame: Loaded dataset with extracted text and metadata
@@ -50,7 +56,7 @@ def load_data(file_path):
         ValueError: If the file cannot be parsed as valid ODT
     """
     import data_model
-    return data_model.load_odt_data(file_path)
+    return data_model.load_odt_data(file_path, max_pages=max_pages)
 
 
 def preprocess_data(data):
@@ -151,7 +157,9 @@ def main():
     
     # STEP 1: Load the philosophical text data
     logging.info(f"Loading data from {DATA_PATH}...")
-    phil_data = load_data(DATA_PATH)
+    if USE_SAMPLE_NUMBER_OF_PAGES_PHIL is not None:
+        logging.info(f"Using sampling mode: first {USE_SAMPLE_NUMBER_OF_PAGES_PHIL} pages only")
+    phil_data = load_data(DATA_PATH, max_pages=USE_SAMPLE_NUMBER_OF_PAGES_PHIL)
     
     # STEP 2: Preprocess the data
     logging.info("Preprocessing data...")

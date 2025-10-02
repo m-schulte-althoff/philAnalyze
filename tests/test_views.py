@@ -22,13 +22,18 @@ class TestVisualizeTextOverview:
         empty_df = pd.DataFrame()
         views.visualize_text_overview(empty_df)
     
-    @patch('views._plot_text_length_distribution')
+    @patch('views.visualize_top_authors')
+    @patch('views.visualize_top_sources')
+    @patch('views.visualize_subcategory_distribution')
+    @patch('views.visualize_quote_hierarchy')
     @patch('views._plot_content_statistics')
-    def test_visualize_calls_subfunctions(self, mock_stats, mock_length):
-        """Test that visualization calls the appropriate plotting functions."""
+    @patch('views._plot_text_length_distribution')
+    def test_visualize_calls_subfunctions(self, mock_length, mock_stats, mock_hierarchy, 
+                                          mock_subcat, mock_sources, mock_authors):
+        """Test that visualize_text_overview calls expected sub-functions."""
         test_data = pd.DataFrame({
-            'text': ['Test text 1', 'Test text 2'],
-            'length': [100, 200]
+            'text': ['Test'],
+            'length': [100]
         })
         
         views.visualize_text_overview(test_data)
@@ -36,6 +41,10 @@ class TestVisualizeTextOverview:
         # Verify sub-functions were called
         mock_length.assert_called_once()
         mock_stats.assert_called_once()
+        mock_hierarchy.assert_called_once()
+        mock_subcat.assert_called_once()
+        mock_sources.assert_called_once()
+        mock_authors.assert_called_once()
     
     def test_visualize_creates_output_directory(self, tmp_path, monkeypatch):
         """Test that output directory is created if it doesn't exist."""
@@ -91,7 +100,8 @@ class TestPlotContentStatistics:
         """Test basic content statistics plotting."""
         test_data = pd.DataFrame({
             'text': ['Text 1', 'Text 2', 'Text 3'],
-            'length': [100, 200, 150]
+            'length': [100, 200, 150],
+            'type': ['quote', 'subcategory', 'quote']
         })
         
         views._plot_content_statistics(test_data, str(tmp_path))
@@ -102,8 +112,24 @@ class TestPlotContentStatistics:
     
     @patch('matplotlib.pyplot.savefig')
     @patch('matplotlib.pyplot.close')
-    def test_plot_handles_missing_length_column(self, mock_close, mock_savefig, tmp_path):
-        """Test that plotting handles missing length column gracefully."""
+    def test_plot_includes_categories(self, mock_close, mock_savefig, tmp_path):
+        """Test that content statistics include categories."""
+        test_data = pd.DataFrame({
+            'text': ['Cat 1', 'Subcat 1', 'Quote 1', 'Quote 2'],
+            'type': ['category', 'subcategory', 'quote', 'quote'],
+            'length': [10, 20, 100, 150]
+        })
+        
+        views._plot_content_statistics(test_data, str(tmp_path))
+        
+        # Verify plot was created
+        mock_savefig.assert_called_once()
+        mock_close.assert_called_once()
+    
+    @patch('matplotlib.pyplot.savefig')
+    @patch('matplotlib.pyplot.close')
+    def test_plot_handles_missing_type_column(self, mock_close, mock_savefig, tmp_path):
+        """Test that plotting handles missing type column gracefully."""
         test_data = pd.DataFrame({
             'text': ['Text 1', 'Text 2']
         })
@@ -111,36 +137,6 @@ class TestPlotContentStatistics:
         # Should not raise error
         views._plot_content_statistics(test_data, str(tmp_path))
         
-        mock_savefig.assert_called_once()
-        mock_close.assert_called_once()
-
-
-class TestVisualizeSectionBreakdown:
-    """Test suite for visualize_section_breakdown function."""
-    
-    def test_visualize_missing_section_column(self):
-        """Test visualization when section column is missing."""
-        test_data = pd.DataFrame({
-            'text': ['Test text']
-        })
-        
-        # Should not raise error, just log warning
-        views.visualize_section_breakdown(test_data)
-    
-    @patch('matplotlib.pyplot.savefig')
-    @patch('matplotlib.pyplot.close')
-    def test_visualize_section_breakdown_success(self, mock_close, mock_savefig, tmp_path, monkeypatch):
-        """Test successful section breakdown visualization."""
-        monkeypatch.chdir(tmp_path)
-        
-        test_data = pd.DataFrame({
-            'text': ['Text 1', 'Text 2', 'Text 3', 'Text 4'],
-            'section': ['Section 1', 'Section 1', 'Section 2', 'Section 3']
-        })
-        
-        views.visualize_section_breakdown(test_data)
-        
-        # Verify plot was saved
         mock_savefig.assert_called_once()
         mock_close.assert_called_once()
 
@@ -195,3 +191,87 @@ class TestGenerateSummaryReport:
         # Verify directory and file were created
         assert output_path.exists()
         assert output_path.parent.exists()
+
+
+class TestVisualizeTopSources:
+    """Test suite for top sources visualization."""
+    
+    def test_visualize_top_sources_basic(self, tmp_path):
+        """Test basic top sources visualization."""
+        test_data = pd.DataFrame({
+            'citation_source': ['Source A', 'Source B', 'Source A', 'Source C', 'Source A']
+        })
+        
+        views.visualize_top_sources(test_data, str(tmp_path), top_n=3)
+        
+        # Verify output file was created
+        output_file = tmp_path / 'top_sources_citations.png'
+        assert output_file.exists()
+    
+    def test_visualize_top_sources_missing_column(self, tmp_path, caplog):
+        """Test handling of missing citation_source column."""
+        test_data = pd.DataFrame({
+            'text': ['Test 1', 'Test 2']
+        })
+        
+        views.visualize_top_sources(test_data, str(tmp_path))
+        
+        # Should log warning and not create file
+        assert 'citation_source' in caplog.text
+        output_file = tmp_path / 'top_sources_citations.png'
+        assert not output_file.exists()
+    
+    def test_visualize_top_sources_empty_citations(self, tmp_path, caplog):
+        """Test handling of data with no citations."""
+        test_data = pd.DataFrame({
+            'citation_source': [None, None, None]
+        })
+        
+        views.visualize_top_sources(test_data, str(tmp_path))
+        
+        # Should log warning and not create file
+        assert 'No citations with sources found' in caplog.text
+        output_file = tmp_path / 'top_sources_citations.png'
+        assert not output_file.exists()
+
+
+class TestVisualizeTopAuthors:
+    """Test suite for top authors visualization."""
+    
+    def test_visualize_top_authors_basic(self, tmp_path):
+        """Test basic top authors visualization."""
+        test_data = pd.DataFrame({
+            'citation_author': ['Kant', 'Hegel', 'Kant', 'Nietzsche', 'Kant', 'Hegel']
+        })
+        
+        views.visualize_top_authors(test_data, str(tmp_path), top_n=3)
+        
+        # Verify output file was created
+        output_file = tmp_path / 'top_authors_citations.png'
+        assert output_file.exists()
+    
+    def test_visualize_top_authors_missing_column(self, tmp_path, caplog):
+        """Test handling of missing citation_author column."""
+        test_data = pd.DataFrame({
+            'text': ['Test 1', 'Test 2']
+        })
+        
+        views.visualize_top_authors(test_data, str(tmp_path))
+        
+        # Should log warning and not create file
+        assert 'citation_author' in caplog.text
+        output_file = tmp_path / 'top_authors_citations.png'
+        assert not output_file.exists()
+    
+    def test_visualize_top_authors_empty_citations(self, tmp_path, caplog):
+        """Test handling of data with no authors."""
+        test_data = pd.DataFrame({
+            'citation_author': [None, None, None]
+        })
+        
+        views.visualize_top_authors(test_data, str(tmp_path))
+        
+        # Should log warning and not create file
+        assert 'No citations with authors found' in caplog.text
+        output_file = tmp_path / 'top_authors_citations.png'
+        assert not output_file.exists()
