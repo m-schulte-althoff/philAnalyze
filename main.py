@@ -21,9 +21,10 @@ logging.basicConfig(
 # Analysis module toggles
 USE_VISUALIZATIONS = True       # Generate exploratory plots and result visualizations
 EXPORT_TO_OBSIDIAN = False      # Export processed data in Obsidian-compatible format
+EXPORT_DF = True               # Export preprocessed data to CSV file
 
 USE_SAMPLE_NUMBER_OF_PAGES_PHIL = None  # Number of pages to load for testing. Set to None to load entire file. Set to integer (e.g., 10) to load only first X pages
-USE_TEST_PHIL = True  # Use small test dataset for philAnalyze (for quick debugging)
+USE_TEST_PHIL = False  # Use small test dataset for philAnalyze (for quick debugging)
 
 # Data file paths
 if USE_TEST_PHIL:
@@ -169,12 +170,13 @@ def main():
     # STEP 2: Preprocess the data
     logging.info("Preprocessing data...")
     phil_data = preprocess_data(phil_data)
-    # Export preprocessed data for inspection (if using test data)
-    if USE_TEST_PHIL:
+    
+    # Export preprocessed data for inspection (if enabled)
+    if EXPORT_DF:
         test_output_path = os.path.join(OUTPUT_DIR, 'preprocessed_data.csv')
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         phil_data.to_csv(test_output_path, index=False)
-        logging.info(f"Exported preprocessed test data to {test_output_path}")
+        logging.info(f"Exported preprocessed data to {test_output_path}")
     
     logging.info(f"Loaded {len(phil_data)} records.")
     
