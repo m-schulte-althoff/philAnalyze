@@ -53,14 +53,20 @@ def parse_citation(text):
     citation = {'raw': citation_raw}
     
     # Split by commas (but be careful with commas in quotes)
-    # Handle both straight quotes (") and curly quotes (" ")
+    # Handle straight quotes (") and curly quotes (" " „ ")
+    # German uses „text" (U+201E opening, U+201C closing)
+    # English uses "text" (U+201C opening, U+201D closing)
     parts = []
     current_part = []
     in_quotes = False
     
     for char in citation_raw:
-        # Check for quote characters (ASCII 34, left curly 8220, right curly 8221)
-        if char in ['"', '\u201c', '\u201d']:
+        # Check for quote characters:
+        # - ASCII 34 (")
+        # - U+201C/8220 (") - English left/German right
+        # - U+201D/8221 (") - English right
+        # - U+201E/8222 („) - German left
+        if char in ['"', '\u201c', '\u201d', '\u201e']:
             in_quotes = not in_quotes
         elif char == ',' and not in_quotes:
             parts.append(''.join(current_part).strip())
@@ -76,22 +82,51 @@ def parse_citation(text):
         citation['author'] = parts[0]
     
     if len(parts) >= 2:
-        # Extract title (remove quotes if present - handle both straight and curly quotes)
+        # Extract title (remove quotes if present)
+        # Handle: " (ASCII), " " (English), „ " (German)
         title = parts[1].strip()
-        # Remove leading quote (ASCII 34, left curly 8220, or right curly 8221)
-        if title and title[0] in ['"', '\u201c', '\u201d']:
-            title = title[1:]
-        # Remove trailing quote (ASCII 34, left curly 8220, or right curly 8221)
-        if title and title[-1] in ['"', '\u201c', '\u201d']:
-            title = title[:-1]
-        citation['title'] = title
+        
+        # Only remove wrapping quotes if they appear at BOTH start and end
+        # and form a matching pair
+        if title and len(title) >= 2:
+            first_char = title[0]
+            last_char = title[-1]
+            
+            # Check for matching quote pairs that wrap the entire title
+            # ASCII quotes: "..."
+            # English quotes: "..." (left double + right double)
+            # German quotes: „..." (low opening + left double closing)
+            
+            is_wrapped = False
+            if first_char == '"' and last_char == '"':  # ASCII
+                is_wrapped = True
+            elif first_char == '\u201c' and last_char == '\u201d':  # English "..."
+                is_wrapped = True
+            elif first_char == '\u201e' and last_char == '\u201c':  # German „..."
+                is_wrapped = True
+            
+            if is_wrapped:
+                title = title[1:-1]
+        
+        # DO NOT remove dates/years from title - they are part of the citation
+        
+        citation['title'] = title.strip()
     
     if len(parts) >= 3:
-        # Check for "in:" prefix
-        source = parts[2].strip()
+        # For nested citations like "in: X, Y; zitiert in: Z",
+        # we need to combine all parts after "in:" into the source
+        # Check for "in:" prefix in first source part
+        source_parts = parts[2:]
+        source = ', '.join(source_parts)
+        
+        # If third part starts with "in:", it's a source reference
         if source.lower().startswith('in:'):
             source = source[3:].strip()
-        citation['source'] = source
+            citation['source'] = source
+        else:
+            # Otherwise, it's part of the title (e.g., "Twitter, 28.09.2025")
+            # Append remaining parts to the title
+            citation['title'] = citation['title'] + ', ' + source
     
     return quote_text, citation
 
@@ -387,6 +422,10 @@ def load_odt_data(file_path, max_pages=None):
         current_subcategory = None
         in_toc = True  # Assume we start in ToC
         
+        # Build a mapping of subcategory -> category from the TOC
+        subcategory_to_category = {}
+        toc_current_category = None
+        
         for idx, paragraph in enumerate(paragraphs, start=1):
             # Use the new function to get text WITH tabs preserved
             text = get_text_with_tabs(paragraph)
@@ -430,19 +469,28 @@ def load_odt_data(file_path, max_pages=None):
             
             # Detect if still in ToC (heuristic: ToC has many tabs/short lines with links)
             if in_toc:
-                # ToC entries with tabs and links are subcategory names
-                if '\t' in text and len(links) > 0:
-                    # This is a ToC subcategory entry - extract the name
-                    toc_subcat_name = ' '.join(text.strip().split())  # Clean up spaces/tabs
-                    # Don't set current_subcategory yet - wait for actual content
+                # Check for category headings in TOC
+                if is_category_heading(paragraph, text) and '\t' not in text:
+                    toc_current_category = text.strip()
                     record['type'] = 'toc'
-                    record['text'] = toc_subcat_name  # Store cleaned name
                     data_records.append(record)
                     continue
                 
-                # Exit ToC when we see a category, subcategory heading, or a quote
-                if (is_category_heading(paragraph, text) or 
-                    is_subcategory_heading(paragraph, text) or 
+                # TOC subcategory entries have links but no tabs
+                # They are short lines (subcategory names) with internal links
+                if len(links) > 0 and '\t' not in text and len(text.strip()) < 100:
+                    # This is likely a TOC subcategory entry
+                    toc_subcat_name = text.strip()
+                    # Map this subcategory to its category
+                    if toc_current_category:
+                        subcategory_to_category[toc_subcat_name] = toc_current_category
+                    record['type'] = 'toc'
+                    record['text'] = toc_subcat_name
+                    data_records.append(record)
+                    continue
+                
+                # Exit ToC when we see a subcategory heading (content section) or a quote
+                if (is_subcategory_heading(paragraph, text) or 
                     detect_quote_level(text)[0] is not None):
                     in_toc = False
                     # Don't continue - process this paragraph below
@@ -462,6 +510,9 @@ def load_odt_data(file_path, max_pages=None):
             # Check if this is a subcategory heading
             if is_subcategory_heading(paragraph, text):
                 current_subcategory = text.strip()
+                # Look up the correct category from the TOC mapping
+                if current_subcategory in subcategory_to_category:
+                    current_category = subcategory_to_category[current_subcategory]
                 record['type'] = 'subcategory'
                 record['category'] = current_category
                 record['subcategory'] = current_subcategory
@@ -475,7 +526,19 @@ def load_odt_data(file_path, max_pages=None):
                 # Parse citation
                 quote_text, citation = parse_citation(content)
                 
-                record['type'] = 'quote'
+                # Determine the type based on marker, content, and citation
+                entry_type = 'quote'  # Default type
+                
+                if not citation:
+                    # No citation - check if it's a reference or own remark
+                    # Note: quote_text might still have the marker in it (e.g., "° Vgl. Tod")
+                    text_to_check = quote_text.lstrip('°^~+-').strip()
+                    if marker == '°' and text_to_check.startswith('Vgl.'):
+                        entry_type = 'reference'
+                    else:
+                        entry_type = 'own remark'
+                
+                record['type'] = entry_type
                 record['quote_level'] = level
                 record['quote_marker'] = marker
                 record['quote_text'] = quote_text
@@ -488,8 +551,74 @@ def load_odt_data(file_path, max_pages=None):
             
             data_records.append(record)
         
+        # Merge continuation paragraphs with quotes
+        merged_records = []
+        i = 0
+        while i < len(data_records):
+            record = data_records[i]
+            
+            # If this is a quote without a citation, check if next paragraphs are continuations
+            if record['type'] in ['quote', 'reference', 'own remark'] and not record['citation_raw']:
+                # Collect continuation paragraphs
+                # Start with the already-cleaned quote_text (without markers/quotes)
+                full_text = record['quote_text']
+                full_raw_text = record['text']  # Keep raw text for reference
+                j = i + 1
+                
+                while j < len(data_records):
+                    next_record = data_records[j]
+                    
+                    # Stop if we hit another quote, category, subcategory, or if the next has tabs/marker
+                    if next_record['type'] in ['quote', 'reference', 'own remark', 'category', 'subcategory', 'toc']:
+                        break
+                    
+                    # Check if next record starts with a quote marker (would be detected as 'other' if no tabs)
+                    next_text = next_record['text']
+                    if next_text.strip() and next_text.strip()[0] in ['°', '^', '~', '+', '-']:
+                        # Could be a continuation starting with "- " (not a quote marker)
+                        # Only treat as continuation if no tabs/indentation at start
+                        if '\t' in next_record['text'] or next_record['text'].startswith('    '):
+                            break  # This would be a quote, stop merging
+                    
+                    # This is a continuation - merge it
+                    full_text += ' ' + next_text.strip()
+                    full_raw_text += ' ' + next_text.strip()
+                    j += 1
+                
+                # Parse the full merged text for citation
+                quote_text, citation = parse_citation(full_text)
+                
+                # Re-determine type after merging
+                entry_type = 'quote'  # Default type
+                marker = record.get('quote_marker')
+                
+                if not citation:
+                    # No citation - check if it's a reference or own remark
+                    text_to_check = quote_text.lstrip('°^~+-').strip()
+                    if marker == '°' and text_to_check.startswith('Vgl.'):
+                        entry_type = 'reference'
+                    else:
+                        entry_type = 'own remark'
+                
+                record['type'] = entry_type
+                record['text'] = full_raw_text
+                record['quote_text'] = quote_text
+                record['length'] = len(full_raw_text)
+                
+                if citation:
+                    record['citation_author'] = citation.get('author')
+                    record['citation_title'] = citation.get('title')
+                    record['citation_source'] = citation.get('source')
+                    record['citation_raw'] = citation.get('raw')
+                
+                merged_records.append(record)
+                i = j  # Skip the merged paragraphs
+            else:
+                merged_records.append(record)
+                i += 1
+        
         # Convert to DataFrame
-        df = pd.DataFrame(data_records)
+        df = pd.DataFrame(merged_records)
         
         if max_pages is not None:
             logger.info("Successfully loaded %d paragraphs from first ~%d pages of %s",
@@ -517,6 +646,8 @@ def preprocess_philosophical_data(data):
     - Calculates text statistics
     - Counts quotes per subcategory
     - Analyzes citation patterns
+    - Adds higherLevelQuoteRef column (positioned after quote_level)
+    - Filters to keep only quote-like entries (quote, reference, own remark)
     
     Args:
         data (pd.DataFrame): Raw data loaded from ODT file
@@ -527,6 +658,12 @@ def preprocess_philosophical_data(data):
             - 'word_count': Number of words in the text
             - 'has_citation': Boolean indicating if quote has citation
             - 'has_links': Boolean indicating if paragraph has hyperlinks
+            - 'higherLevelQuoteRef': Reference to parent quote ID (or '-' for level 1)
+            
+        Note: Entries are classified as:
+            - 'quote': Has a citation
+            - 'reference': No citation, marker is °, starts with 'Vgl.'
+            - 'own remark': No citation and not a reference
     """
     
     logger.info("Preprocessing philosophical text data...")
@@ -535,7 +672,7 @@ def preprocess_philosophical_data(data):
         logger.warning("No data to preprocess.")
         return data
     
-    # Add unique ID column
+    # Add unique ID column BEFORE filtering
     data['id'] = range(1, len(data) + 1)
     
     # Calculate word count
@@ -545,8 +682,50 @@ def preprocess_philosophical_data(data):
     data['has_citation'] = data['citation_raw'].notna()
     data['has_links'] = data['links'].apply(lambda x: len(x) > 0 if isinstance(x, list) else False)
     
-    # Statistics
-    total_quotes = len(data[data['type'] == 'quote'])
+    # Add higherLevelQuoteRef column
+    data['higherLevelQuoteRef'] = '-'
+    
+    # For each quote, find the most recent quote with level one less
+    last_quote_at_level = {}  # level -> id mapping
+    
+    for idx, row in data.iterrows():
+        # Process all quote-like types
+        if row['type'] in ['quote', 'reference', 'own remark'] and pd.notna(row['quote_level']):
+            current_level = row['quote_level']
+            current_id = row['id']
+            
+            # If level > 1, find the parent (most recent quote at level-1)
+            if current_level > 1:
+                parent_level = current_level - 1
+                if parent_level in last_quote_at_level:
+                    data.at[idx, 'higherLevelQuoteRef'] = last_quote_at_level[parent_level]
+            
+            # Update the mapping for this level
+            last_quote_at_level[current_level] = current_id
+            
+            # Clear all higher levels (since we can't have children of this quote yet)
+            levels_to_clear = [l for l in last_quote_at_level.keys() if l > current_level]
+            for l in levels_to_clear:
+                del last_quote_at_level[l]
+    
+    # Reorder columns to place higherLevelQuoteRef directly after quote_level
+    # Get all columns
+    cols = data.columns.tolist()
+    
+    # Remove higherLevelQuoteRef from its current position
+    if 'higherLevelQuoteRef' in cols:
+        cols.remove('higherLevelQuoteRef')
+    
+    # Find the position of quote_level and insert higherLevelQuoteRef after it
+    if 'quote_level' in cols:
+        quote_level_idx = cols.index('quote_level')
+        cols.insert(quote_level_idx + 1, 'higherLevelQuoteRef')
+    
+    # Reorder the dataframe
+    data = data[cols]
+    
+    # Statistics BEFORE filtering
+    total_quotes = len(data[data['type'].isin(['quote', 'reference', 'own remark'])])
     total_subcategories = len(data[data['type'] == 'subcategory'])
     quotes_with_citations = data['has_citation'].sum()
     
@@ -556,6 +735,10 @@ def preprocess_philosophical_data(data):
     logger.info("Quotes with citations: %d (%.1f%%)", 
                quotes_with_citations, 
                100 * quotes_with_citations / total_quotes if total_quotes > 0 else 0)
+    
+    # Filter to keep only quote-like entries (quote, reference, own remark)
+    data = data[data['type'].isin(['quote', 'reference', 'own remark'])].copy()
+    logger.info("After filtering: %d quote records remaining", len(data))
     
     return data
 
