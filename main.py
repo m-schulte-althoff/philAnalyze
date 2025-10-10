@@ -23,17 +23,22 @@ USE_VISUALIZATIONS = True       # Generate exploratory plots and result visualiz
 EXPORT_TO_OBSIDIAN = False      # Export processed data in Obsidian-compatible format
 
 USE_SAMPLE_NUMBER_OF_PAGES_PHIL = None  # Number of pages to load for testing. Set to None to load entire file. Set to integer (e.g., 10) to load only first X pages
+USE_TEST_PHIL = True  # Use small test dataset for philAnalyze (for quick debugging)
 
 # Data file paths
-DATA_PATH = 'data/Phil.odt'     # Main philosophical text dataset (ODT format)
-
-
+if USE_TEST_PHIL:
+    DATA_PATH = 'data/Phil_test.odt'  # Small test dataset for quick debugging
+else:
+    DATA_PATH = 'data/Phil.odt'     # Main philosophical text dataset (ODT format)
 
 # =============================================================================
 # OUTPUT CONFIGURATION
 # =============================================================================
 
-OUTPUT_DIR = 'output'           # Directory for analysis results and exports
+if USE_TEST_PHIL:
+    OUTPUT_DIR = 'output/test'           # Directory for analysis results and exports
+else:
+    OUTPUT_DIR = 'output'           # Directory for analysis results and exports
 
 
 def load_data(file_path, max_pages=None):
@@ -164,6 +169,12 @@ def main():
     # STEP 2: Preprocess the data
     logging.info("Preprocessing data...")
     phil_data = preprocess_data(phil_data)
+    # Export preprocessed data for inspection (if using test data)
+    if USE_TEST_PHIL:
+        test_output_path = os.path.join(OUTPUT_DIR, 'preprocessed_data.csv')
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        phil_data.to_csv(test_output_path, index=False)
+        logging.info(f"Exported preprocessed test data to {test_output_path}")
     
     logging.info(f"Loaded {len(phil_data)} records.")
     
