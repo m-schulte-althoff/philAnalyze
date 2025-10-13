@@ -20,7 +20,7 @@ logging.basicConfig(
 
 # Analysis module toggles
 USE_VISUALIZATIONS = True       # Generate exploratory plots and result visualizations
-EXPORT_TO_OBSIDIAN = False      # Export processed data in Obsidian-compatible format
+EXPORT_TO_OBSIDIAN = True      # Export processed data in Obsidian-compatible format
 EXPORT_DF = True               # Export preprocessed data to CSV file
 
 USE_SAMPLE_NUMBER_OF_PAGES_PHIL = None  # Number of pages to load for testing. Set to None to load entire file. Set to integer (e.g., 10) to load only first X pages

@@ -13,72 +13,72 @@ import main
 class TestLoadData:
     """Test suite for load_data function."""
     
-    @patch('main.data_model')
-    def test_load_data_calls_data_model(self, mock_data_model):
+    @patch('data_model.load_odt_data')
+    def test_load_data_calls_data_model(self, mock_load_odt):
         """Test that load_data delegates to data_model module."""
         mock_df = pd.DataFrame({'text': ['test']})
-        mock_data_model.load_odt_data.return_value = mock_df
+        mock_load_odt.return_value = mock_df
         
         result = main.load_data('test.odt')
         
-        mock_data_model.load_odt_data.assert_called_once_with('test.odt')
+        mock_load_odt.assert_called_once_with('test.odt', max_pages=None)
         assert result is mock_df
 
 
 class TestPreprocessData:
     """Test suite for preprocess_data function."""
     
-    @patch('main.data_model')
-    def test_preprocess_data_calls_data_model(self, mock_data_model):
+    @patch('data_model.preprocess_philosophical_data')
+    def test_preprocess_data_calls_data_model(self, mock_preprocess):
         """Test that preprocess_data delegates to data_model module."""
         mock_input = pd.DataFrame({'text': ['test']})
         mock_output = pd.DataFrame({'text': ['test'], 'id': [1]})
-        mock_data_model.preprocess_philosophical_data.return_value = mock_output
+        mock_preprocess.return_value = mock_output
         
         result = main.preprocess_data(mock_input)
         
-        mock_data_model.preprocess_philosophical_data.assert_called_once_with(mock_input)
+        mock_preprocess.assert_called_once_with(mock_input)
         assert result is mock_output
 
 
 class TestVisualizeData:
     """Test suite for visualize_data function."""
     
-    @patch('main.views')
-    def test_visualize_data_calls_views(self, mock_views):
+    @patch('views.visualize_text_overview')
+    def test_visualize_data_calls_views(self, mock_visualize):
         """Test that visualize_data delegates to views module."""
         test_data = pd.DataFrame({'text': ['test']})
         
         main.visualize_data(test_data)
         
-        mock_views.visualize_text_overview.assert_called_once_with(test_data)
+        mock_visualize.assert_called_once_with(test_data)
 
 
 class TestExportToObsidian:
     """Test suite for export_to_obsidian function."""
     
-    @patch('main.obsidian_export')
+    @patch('obsidian_export.export_to_markdown')
     @patch('main.os.makedirs')
     def test_export_to_obsidian_creates_directory(self, mock_makedirs, mock_export):
         """Test that export creates output directory."""
         test_data = pd.DataFrame({'text': ['test']})
-        mock_export.export_to_markdown.return_value = {'files_created': 1}
+        mock_export.return_value = {'files_created': 1}
         
         main.export_to_obsidian(test_data, 'output/obsidian')
         
         mock_makedirs.assert_called_once_with('output/obsidian', exist_ok=True)
     
-    @patch('main.obsidian_export')
+    @patch('obsidian_export.export_to_markdown')
     @patch('main.os.makedirs')
     def test_export_to_obsidian_calls_export_module(self, mock_makedirs, mock_export):
         """Test that export delegates to obsidian_export module."""
         test_data = pd.DataFrame({'text': ['test']})
         expected_stats = {'files_created': 5, 'total_links': 10}
-        mock_export.export_to_markdown.return_value = expected_stats
+        mock_export.return_value = expected_stats
         
         result = main.export_to_obsidian(test_data, 'output/obsidian')
         
-        mock_export.export_to_markdown.assert_called_once_with(test_data, 'output/obsidian')
+        mock_export.assert_called_once_with(test_data, 'output/obsidian')
         assert result == expected_stats
 
 
