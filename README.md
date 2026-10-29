@@ -18,7 +18,8 @@ philAnalyze/
 │   ├── test_data_model.py
 │   ├── test_views.py
 │   └── test_obsidian_export.py
-├── requirements.txt      # Python dependencies
+├── pyproject.toml        # Project dependencies and Python version
+├── uv.lock               # Locked dependency versions
 ├── .pylintrc            # Pylint configuration
 └── README.md            # This file
 ```
@@ -39,10 +40,14 @@ git clone <repository-url>
 cd philAnalyze
 ```
 
-2. Install dependencies:
+2. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if it is not already available.
+
+3. Create the project environment and install the locked dependencies:
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
+
+`uv sync` creates and maintains the local `.venv` environment. Run all project commands through `uv run`; it automatically keeps that environment synchronized with `uv.lock`.
 
 ## Usage
 
@@ -50,7 +55,7 @@ pip install -r requirements.txt
 
 Run the main pipeline:
 ```bash
-python main.py
+uv run python main.py
 ```
 
 ### Configuration
@@ -67,29 +72,29 @@ DATA_PATH = 'data/Phil.odt'  # Input data file
 
 Run all tests:
 ```bash
-pytest
+uv run pytest
 ```
 
 Run with coverage report:
 ```bash
-pytest --cov=. --cov-report=html
+uv run pytest --cov=. --cov-report=html
 ```
 
 Run specific test file:
 ```bash
-pytest tests/test_data_model.py
+uv run pytest tests/test_data_model.py
 ```
 
 ### Code Quality
 
 Run pylint:
 ```bash
-pylint main.py data_model.py views.py obsidian_export.py
+uv run pylint main.py data_model.py views.py obsidian_export.py
 ```
 
 Format code with black:
 ```bash
-black .
+uv run black .
 ```
 
 ## Module Descriptions
@@ -141,8 +146,9 @@ Export module that:
 
 ## Requirements
 
-- Python 3.8+
-- pandas >= 2.0.0
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) for dependency and environment management
+- pandas >= 2.0.0, < 3.0.0
 - matplotlib >= 3.7.0
 - odfdo >= 3.6.0
 - pytest >= 7.4.0
@@ -154,11 +160,12 @@ Export module that:
 
 ## Contributing
 
-1. Ensure all tests pass: `pytest`
-2. Check code quality: `pylint <files>`
-3. Format code: `black .`
-4. Add tests for new features
-5. Update documentation
+1. Synchronize dependencies: `uv sync`
+2. Ensure all tests pass: `uv run pytest`
+3. Check code quality: `uv run pylint <files>`
+4. Format code: `uv run black .`
+5. Add tests for new features
+6. Update documentation
 
 ## Architecture Notes
 
