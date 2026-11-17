@@ -19,6 +19,51 @@ The Obsidian Export module transforms preprocessed philosophical notes from a Da
 
 ## Usage
 
+### Updating an existing vault
+
+Choose the mode with `REBUILD_OBSIDIAN` in `main.py`:
+
+- `False` (default): update the existing `output/obsidian` vault incrementally.
+- `True`: build from scratch in a new `output/obsidian-fresh-*` folder on each
+  run, leaving the existing vault intact. The log prints the new vault's absolute
+  path. Open that folder in Obsidian; it will need initial indexing and has no
+  copied Obsidian settings or personal notes.
+
+With `USE_TEST_PHIL = True`, these folders are under `output/test` instead.
+Switching back to `False` updates `output/obsidian` again, not the fresh copy.
+
+Run `uv run python main.py` as usual and keep using the same `output/obsidian`
+vault in Obsidian. Export is incremental by default: identical Markdown files
+keep their contents and modification times. Only new or changed notes and MOCs
+are written. Creation dates are preserved; timestamps alone never trigger writes.
+The log reports created, updated, unchanged, deleted, and conflicted file counts.
+
+The hidden `.philanalyze-manifest.json` records generated files and their hashes.
+On subsequent full exports, obsolete tracked files are removed when entries are
+deleted, renamed, or moved. Untracked files and `.obsidian` settings are left
+alone. Locally edited tracked files are preserved and reported as conflicts;
+resolve these manually (back up your annotations, then remove the conflicting
+generated file to allow its regeneration). Do not delete the manifest routinely.
+
+The first run against an older vault establishes this tracking baseline. Matching
+files are adopted without rewriting. Existing files at generated destinations
+are still updated from Phil.odt on this first run, so back up any annotations
+made in those files beforehand. Historical stale files that are not part of the
+current export are not adopted or removed.
+
+Phil.odt is still fully parsed and Markdown is compared on every run. IDs,
+paragraph numbers, and page metadata come from document order: insertions or
+reordering can therefore change many later notes. This is file-level incremental
+export, not persistent source-entry identity. Partial exports never delete
+excluded files, but their MOCs describe only the selected entries; use a separate
+test vault when sampling a document.
+
+Obsidian [automatically refreshes external file changes and maintains its metadata
+cache](https://obsidian.md/help/data-storage). Keep the existing vault open, or
+reopen that same vault after export; no cache rebuild or Python indexing step is
+needed. The pipeline does not write Obsidian's internal index. A new vault still
+needs its initial indexing pass.
+
 ### Basic Export
 
 ```python
@@ -240,7 +285,11 @@ The export function returns detailed statistics:
 ```python
 {
     'files_created': 57,      # Total markdown files created
-    'mocs_created': 7,        # Number of MOC files
+    'mocs_created': 7,        # Newly created MOCs (included in files_created)
+    'files_updated': 2,      # Existing Markdown files rewritten
+    'files_unchanged': 100,  # Files whose modification times were preserved
+    'files_deleted': 1,     # Obsolete tracked files removed
+    'files_conflicted': 0,  # Locally edited tracked files preserved
     'total_links': 23,        # Total internal links created
     'errors': [],             # List of error messages
     'warnings': []            # List of warning messages

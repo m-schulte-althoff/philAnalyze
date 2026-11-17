@@ -393,6 +393,101 @@ class TestObsidianExporter:
         assert 'entry_count: 4' in content  # 4 entries in Psychoanalysis
     
     # Full export tests
+    def test_exporter_can_be_reused(self, sample_data, exporter):
+        exporter.export_to_markdown(sample_data)
+        stats = exporter.export_to_markdown(sample_data)
+        assert stats['files_created'] == stats['mocs_created'] == 0
+        assert stats['files_unchanged'] == 7
+
+    def test_repeat_export_keeps_all_mtimes_even_on_another_day(self, sample_data, tmp_path):
+        from unittest.mock import patch
+        from datetime import datetime
+
+        with patch('obsidian_export.datetime') as clock:
+            clock.now.return_value = datetime(2025, 1, 1)
+            export_to_markdown(sample_data, str(tmp_path))
+            before = {p: (p.read_bytes(), p.stat().st_mtime_ns)
+                      for p in tmp_path.rglob('*') if p.is_file()}
+            clock.now.return_value = datetime(2026, 2, 2)
+            stats = export_to_markdown(sample_data, str(tmp_path))
+        assert stats['files_created'] == stats['files_updated'] == stats['files_deleted'] == 0
+        assert stats['files_unchanged'] == 7
+        assert before == {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before}
+
+    def test_update_changes_only_affected_quote_and_moc(self, sample_data, tmp_path):
+        export_to_markdown(sample_data, str(tmp_path))
+        before = {p: p.stat().st_mtime_ns for p in tmp_path.rglob('*.md')}
+        sample_data.loc[0, 'quote_text'] = 'Revised quotation'
+        stats = export_to_markdown(sample_data, str(tmp_path))
+        assert stats['files_updated'] == 2
+        assert stats['files_unchanged'] == 5
+        changed = {p.name for p in before if before[p] != p.stat().st_mtime_ns}
+        assert changed == {'Quote - Jung - Psychology and Religion (id-1).md',
+                           '_MOC - Psychoanalysis.md'}
+
+    def test_rename_delete_and_add_preserve_unmanaged_files(self, sample_data, tmp_path):
+        export_to_markdown(sample_data, str(tmp_path))
+        personal = tmp_path / 'Personal.md'
+        personal.write_text('My own note')
+        settings = tmp_path / '.obsidian' / 'app.json'
+        settings.parent.mkdir()
+        settings.write_text('{}')
+        old_note = next(tmp_path.rglob('Note*.md'))
+        removed_quote = next(tmp_path.rglob('*Freud*.md'))
+        sample_data.loc[3, 'text'] = 'Renamed note'
+        sample_data = sample_data.drop(index=1)
+        added = sample_data.iloc[[3]].copy()
+        added['id'] = 99
+        sample_data = pd.concat([sample_data, added], ignore_index=True)
+        stats = export_to_markdown(sample_data, str(tmp_path))
+        assert stats['files_deleted'] == 2
+        assert stats['files_created'] == 2
+        assert not old_note.exists() and not removed_quote.exists()
+        assert personal.read_text() == 'My own note'
+        assert settings.read_text() == '{}'
+
+    def test_local_edits_survive_updates_and_deletions(self, sample_data, tmp_path):
+        export_to_markdown(sample_data, str(tmp_path))
+        note = next(tmp_path.rglob('Note*.md'))
+        note.write_text(note.read_text() + '\nMy annotation\n')
+        edited = note.read_bytes()
+        sample_data.loc[3, 'text'] = 'Changed at source'
+        stats = export_to_markdown(sample_data, str(tmp_path))
+        assert stats['files_conflicted'] == 1
+        assert note.read_bytes() == edited
+        quote = next(tmp_path.rglob('*Jung*.md'))
+        quote.write_text(quote.read_text() + '\nAnother annotation\n')
+        stats = export_to_markdown(sample_data, str(tmp_path))
+        assert stats['files_conflicted'] == 2
+        assert quote.read_text().endswith('Another annotation\n')
+
+    def test_partial_export_does_not_delete_excluded_notes(self, sample_data, tmp_path):
+        export_to_markdown(sample_data, str(tmp_path))
+        note = next(tmp_path.rglob('Note*.md'))
+        before = note.stat().st_mtime_ns
+        partial = sample_data.iloc[:2].copy()
+        partial.attrs['partial_export'] = True
+        stats = export_to_markdown(partial, str(tmp_path))
+        assert stats['files_deleted'] == 0
+        assert note.stat().st_mtime_ns == before
+        stats = export_to_markdown(sample_data.iloc[:2], str(tmp_path))
+        assert stats['files_deleted'] == 4
+
+    def test_existing_vault_is_adopted_without_rewriting(self, sample_data, tmp_path):
+        export_to_markdown(sample_data, str(tmp_path))
+        (tmp_path / '.philanalyze-manifest.json').unlink()
+        before = {p: p.stat().st_mtime_ns for p in tmp_path.rglob('*.md')}
+        stats = export_to_markdown(sample_data, str(tmp_path))
+        assert stats['files_unchanged'] == 7
+        assert before == {p: p.stat().st_mtime_ns for p in before}
+
+    def test_invalid_manifest_stops_before_writes(self, sample_data, tmp_path):
+        manifest = tmp_path / '.philanalyze-manifest.json'
+        manifest.write_text(json.dumps({'../outside.md': '0' * 64}))
+        with pytest.raises(ValueError, match='Unsafe managed vault path'):
+            export_to_markdown(sample_data, str(tmp_path))
+        assert not list(tmp_path.rglob('*.md'))
+
     def test_export_to_markdown_complete(self, sample_data, temp_dir):
         """Test complete export workflow."""
         stats = export_to_markdown(sample_data, temp_dir)

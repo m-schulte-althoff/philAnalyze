@@ -9,6 +9,8 @@ import os
 import json
 import re
 import logging
+import hashlib
+import tempfile
 from urllib.parse import unquote
 from pathlib import Path
 from datetime import datetime
@@ -35,9 +37,15 @@ class ObsidianExporter:
         self.bookmark_paths = {}
         self.other_bookmarks = set()
         self.partial_export = False
+        self.previous_files = {}
+        self.current_files = {}
         self.stats = {
             'files_created': 0,
             'mocs_created': 0,
+            'files_updated': 0,
+            'files_unchanged': 0,
+            'files_deleted': 0,
+            'files_conflicted': 0,
             'total_links': 0,
             'resolved_internal_links': 0,
             'unresolved_internal_links': 0,
@@ -57,6 +65,8 @@ class ObsidianExporter:
             dict: Export statistics
         """
         logger.info("Starting Obsidian export...")
+        self.stats = {key: [] if isinstance(value, list) else 0
+                      for key, value in self.stats.items()}
         
         # Validate input
         errors = self._validate_dataframe(df)
@@ -68,6 +78,8 @@ class ObsidianExporter:
         self._prepare_destinations(df)
         if self.stats['errors']:
             return self.stats
+
+        self._load_manifest()
 
         # Pandas otherwise deep-copies the document's bookmark catalog for every row.
         df = df.copy(deep=False)
@@ -99,8 +111,96 @@ class ObsidianExporter:
                 self._export_entry(row, subcategory_path)
             self._create_moc(category, subcategory, group, subcategory_path)
 
+        self._finish_update()
         logger.info(f"Export complete: {self.stats}")
         return self.stats
+
+    def _managed_path(self, relative):
+        """Keep manifest operations inside the vault and away from symlinks."""
+        path = Path(relative)
+        root = self.output_dir.resolve()
+        if (path.is_absolute() or '..' in path.parts or path.suffix != '.md'
+                or path.parts[0].startswith('.')
+                or (root / path).resolve() != root / path):
+            raise ValueError(f'Unsafe managed vault path: {relative}')
+        return self.output_dir / path
+
+    def _load_manifest(self):
+        manifest = self.output_dir / '.philanalyze-manifest.json'
+        self.previous_files = {}
+        self.current_files = {}
+        if manifest.exists():
+            files = json.loads(manifest.read_text(encoding='utf-8'))
+            if not isinstance(files, dict):
+                raise ValueError('Invalid philAnalyze manifest')
+            for relative, digest in files.items():
+                self._managed_path(relative)
+                if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
+                    raise ValueError(f'Invalid manifest hash: {relative}')
+            self.previous_files = files
+
+    @staticmethod
+    def _atomic_write(path, content):
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                             dir=path.parent, prefix='.philanalyze-',
+                                             delete=False) as handle:
+                temporary = Path(handle.name)
+                handle.write(content)
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _conflict(self, relative):
+        self.stats['files_conflicted'] += 1
+        self.stats['warnings'].append(f'Preserved locally edited file: {relative}')
+        self.current_files[relative] = self.previous_files[relative]
+
+    def _write_markdown(self, path, content, moc=False):
+        relative = path.relative_to(self.output_dir).as_posix()
+        self._managed_path(relative)
+        old = path.read_bytes() if path.exists() else None
+        if old is not None:
+            old_hash = hashlib.sha256(old).hexdigest()
+            if relative in self.previous_files and old_hash != self.previous_files[relative]:
+                self._conflict(relative)
+                return
+            old_text = old.decode('utf-8')
+            # Creation dates and export timestamps must not cause daily rewrites.
+            created = re.search(r'^created: .*$', old_text, flags=re.MULTILINE)
+            if created:
+                content = re.sub(r'^created: .*$', lambda _: created[0], content,
+                                 count=1, flags=re.MULTILINE)
+            generated = r'\*Generated: [^\n]*\*\n?\Z'
+            if re.sub(generated, '', old_text) == re.sub(generated, '', content):
+                self.current_files[relative] = old_hash
+                self.stats['files_unchanged'] += 1
+                return
+        self._atomic_write(path, content)
+        self.current_files[relative] = hashlib.sha256(content.encode('utf-8')).hexdigest()
+        self.stats['files_updated' if old is not None else 'files_created'] += 1
+        if moc and old is None:
+            self.stats['mocs_created'] += 1
+
+    def _finish_update(self):
+        for relative in self.previous_files.keys() - self.current_files.keys():
+            if self.partial_export:
+                self.current_files[relative] = self.previous_files[relative]
+                continue
+            path = self._managed_path(relative)
+            if path.exists():
+                if hashlib.sha256(path.read_bytes()).hexdigest() != self.previous_files[relative]:
+                    self._conflict(relative)
+                    continue
+                path.unlink()
+                self.stats['files_deleted'] += 1
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        manifest = self.output_dir / '.philanalyze-manifest.json'
+        content = json.dumps(self.current_files, indent=2, sort_keys=True) + '\n'
+        if not manifest.exists() or manifest.read_text(encoding='utf-8') != content:
+            self._atomic_write(manifest, content)
     
     def _validate_dataframe(self, df: pd.DataFrame) -> List[str]:
         """Validate input DataFrame structure."""
@@ -247,8 +347,7 @@ class ObsidianExporter:
             content = self._create_note(row)
         
         # Write file
-        filepath.write_text(content, encoding='utf-8')
-        self.stats['files_created'] += 1
+        self._write_markdown(filepath, content)
     
     def _create_quote_note(self, row: pd.Series) -> str:
         """Generate markdown for quote entry."""
@@ -418,8 +517,7 @@ This MOC organizes {len(group)} entries related to {subcategory}.
 *Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
 """
         
-        moc_path.write_text(content, encoding='utf-8')
-        self.stats['mocs_created'] += 1
+        self._write_markdown(moc_path, content, moc=True)
     
     def _build_quote_tree(self, group: pd.DataFrame) -> str:
         """Build hierarchical quote structure."""

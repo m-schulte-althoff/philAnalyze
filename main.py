@@ -7,6 +7,7 @@ following a Model-View-Controller architecture pattern.
 
 import logging
 import os
+import tempfile
 
 # Configure logging
 logging.basicConfig(
@@ -21,6 +22,7 @@ logging.basicConfig(
 # Analysis module toggles
 USE_VISUALIZATIONS = False       # Generate exploratory plots and result visualizations
 EXPORT_TO_OBSIDIAN = True      # Export processed data in Obsidian-compatible format
+REBUILD_OBSIDIAN = False       # True: build a separate fresh vault; False: update output/obsidian
 EXPORT_DF = True               # Export preprocessed data to CSV file
 
 USE_SAMPLE_NUMBER_OF_PAGES_PHIL = None  # Number of pages to load for testing. Set to None to load entire file. Set to integer (e.g., 10) to load only first X pages
@@ -140,7 +142,11 @@ def export_to_obsidian(data, output_dir):
     # Perform export
     export_stats = obsidian_export.export_to_markdown(data, output_dir)
     
-    logging.info(f"Export complete. Files created: {export_stats.get('files_created', 0)}")
+    logging.info(
+        "Vault update: %s created, %s updated, %s unchanged, %s deleted, %s conflicts",
+        *(export_stats.get(f'files_{key}', 0)
+          for key in ('created', 'updated', 'unchanged', 'deleted', 'conflicted'))
+    )
     
     return export_stats
 
@@ -187,6 +193,10 @@ def main():
     # STEP 4: Export to Obsidian format (if enabled)
     if EXPORT_TO_OBSIDIAN:
         obsidian_output_dir = os.path.join(OUTPUT_DIR, 'obsidian')
+        if REBUILD_OBSIDIAN:
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            obsidian_output_dir = tempfile.mkdtemp(prefix='obsidian-fresh-', dir=OUTPUT_DIR)
+        logging.info("Obsidian vault: %s", os.path.abspath(obsidian_output_dir))
         export_to_obsidian(phil_data, obsidian_output_dir)
     
     logging.info("Pipeline complete!")

@@ -89,6 +89,35 @@ class TestExportToObsidian:
 
 class TestMain:
     """Test suite for main function."""
+
+    @pytest.mark.parametrize('rebuild', [False, True])
+    def test_vault_update_or_fresh_build(self, monkeypatch, tmp_path, rebuild):
+        data = pd.DataFrame([{'id': 1, 'category': 'Test', 'subcategory': 'Notes',
+                              'type': 'note', 'text': 'Example'}])
+        monkeypatch.setattr(main, 'load_data', lambda *args, **kwargs: data)
+        monkeypatch.setattr(main, 'preprocess_data', lambda data: data)
+        monkeypatch.setattr(main, 'USE_VISUALIZATIONS', False)
+        monkeypatch.setattr(main, 'EXPORT_DF', False)
+        monkeypatch.setattr(main, 'EXPORT_TO_OBSIDIAN', True)
+        monkeypatch.setattr(main, 'REBUILD_OBSIDIAN', rebuild)
+        vault = tmp_path / 'obsidian'
+        main.export_to_obsidian(data, str(vault))
+        settings = vault / '.obsidian' / 'app.json'
+        settings.parent.mkdir()
+        settings.write_text('{}')
+        before = {p: (p.read_bytes(), p.stat().st_mtime_ns)
+                  for p in vault.rglob('*') if p.is_file()}
+
+        main.main()
+        main.main()
+
+        assert before == {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before}
+        fresh = list(tmp_path.glob('obsidian-fresh-*'))
+        assert len(fresh) == (2 if rebuild else 0)
+        for new_vault in fresh:
+            assert len(list(new_vault.rglob('*.md'))) == 2
+            assert (new_vault / '.philanalyze-manifest.json').exists()
+            assert not (new_vault / '.obsidian').exists()
     
     @patch('main.load_data')
     @patch('main.preprocess_data')

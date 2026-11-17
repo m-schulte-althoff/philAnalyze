@@ -124,9 +124,17 @@ Visualization module that:
 ### obsidian_export.py
 Export module that:
 - Transforms data to Obsidian markdown format
+- Updates the same vault incrementally, preserving unchanged files and Obsidian settings
 - Creates YAML frontmatter
 - Generates wikilink-style connections (placeholder)
 - Sanitizes filenames
+
+Run `uv run python main.py` again after editing `data/Phil.odt`, and keep using
+the same `output/obsidian` vault. See [incremental export details and migration
+limitations](OBSIDIAN_EXPORT_README.md#updating-an-existing-vault).
+To build a separate vault from scratch, set `REBUILD_OBSIDIAN = True` in
+`main.py`. Each run creates a new `output/obsidian-fresh-*` folder and leaves
+the existing vault intact; the log prints its path.
 
 ## Development Status
 
