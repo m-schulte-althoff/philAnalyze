@@ -117,9 +117,9 @@ class TestObsidianExporter:
     def test_convert_links_internal(self, exporter):
         """Test conversion of internal links."""
         json_str = '[{"text": "Tod", "url": "#Tod", "type": "internal"}]'
+        exporter.bookmark_paths = {'Tod': ['Mensch/Tod/_MOC - Tod.md']}
         result = exporter._convert_links(json_str)
-        assert '[[Tod]]' in result
-        assert exporter.stats['total_links'] > 0
+        assert '[[Mensch/Tod/_MOC - Tod|Tod]]' in result
     
     def test_convert_links_external(self, exporter):
         """Test conversion of external links."""
@@ -131,7 +131,8 @@ class TestObsidianExporter:
         """Test conversion of mixed link types."""
         json_str = '[{"text": "Internal", "url": "#Internal", "type": "internal"}, {"text": "External", "url": "https://example.com", "type": "external"}]'
         result = exporter._convert_links(json_str)
-        assert '[[Internal]]' in result
+        assert '- Internal' in result
+        assert '[[Internal]]' not in result
         assert '[External](https://example.com)' in result
     
     def test_convert_links_invalid_json(self, exporter):
@@ -244,9 +245,9 @@ class TestObsidianExporter:
     # Related subcategories tests
     def test_find_related_subcategories(self, exporter, sample_data):
         """Test finding related subcategories from links."""
+        exporter.bookmark_paths = {'Tod': ['Mensch/Tod/_MOC - Tod.md']}
         related = exporter._find_related_subcategories(sample_data)
-        
-        assert '[[Tod]]' in related
+        assert '[[Mensch/Tod/_MOC - Tod|Tod]]' in related
     
     def test_find_related_subcategories_none(self, exporter):
         """Test finding related subcategories when none exist."""

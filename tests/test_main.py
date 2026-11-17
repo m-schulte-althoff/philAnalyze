@@ -10,6 +10,11 @@ import pandas as pd
 import main
 
 
+@pytest.fixture(autouse=True)
+def isolate_pipeline_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, 'OUTPUT_DIR', str(tmp_path))
+
+
 class TestLoadData:
     """Test suite for load_data function."""
     

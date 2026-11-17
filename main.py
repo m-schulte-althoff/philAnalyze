@@ -19,7 +19,7 @@ logging.basicConfig(
 # =============================================================================
 
 # Analysis module toggles
-USE_VISUALIZATIONS = True       # Generate exploratory plots and result visualizations
+USE_VISUALIZATIONS = False       # Generate exploratory plots and result visualizations
 EXPORT_TO_OBSIDIAN = True      # Export processed data in Obsidian-compatible format
 EXPORT_DF = True               # Export preprocessed data to CSV file
 

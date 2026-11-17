@@ -308,10 +308,13 @@ class TestQuoteDetection:
         """Test that quotes are assigned to subcategories."""
         quotes = sample_data[sample_data['type'] == 'quote']
         
-        # Most quotes should be assigned to a subcategory
-        # (Some early quotes might not be if they're before first subcategory)
-        quotes_with_subcat = quotes[pd.notna(quotes['subcategory'])]
-        assert len(quotes_with_subcat) > len(quotes) * 0.75  # At least 75%
+        # Introductory quotes precede the first real heading; TOC entries are not headings.
+        headings = sample_data[sample_data['type'] == 'subcategory']
+        assert not headings.empty
+        first_heading = headings['paragraph_num'].min()
+        after_heading = quotes[quotes['paragraph_num'] > first_heading]
+        assert not after_heading.empty
+        assert after_heading['subcategory'].notna().all()
     
     def test_quote_count_per_subcategory(self):
         """Test that quote counts per subcategory are reasonable."""

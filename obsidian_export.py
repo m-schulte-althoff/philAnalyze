@@ -9,6 +9,7 @@ import os
 import json
 import re
 import logging
+from urllib.parse import unquote
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -30,10 +31,17 @@ class ObsidianExporter:
             output_dir: Base directory for Obsidian vault export
         """
         self.output_dir = Path(output_dir)
+        self.moc_paths = {}
+        self.bookmark_paths = {}
+        self.other_bookmarks = set()
+        self.partial_export = False
         self.stats = {
             'files_created': 0,
             'mocs_created': 0,
             'total_links': 0,
+            'resolved_internal_links': 0,
+            'unresolved_internal_links': 0,
+            'skipped_entries': 0,
             'errors': [],
             'warnings': []
         }
@@ -57,6 +65,22 @@ class ObsidianExporter:
             logger.error(f"Validation failed: {errors}")
             return self.stats
         
+        self._prepare_destinations(df)
+        if self.stats['errors']:
+            return self.stats
+
+        # Pandas otherwise deep-copies the document's bookmark catalog for every row.
+        df = df.copy(deep=False)
+        df.attrs = {}
+
+        assigned = df['category'].notna() & df['subcategory'].notna()
+        self.stats['skipped_entries'] = int((~assigned).sum())
+        if not assigned.all():
+            self.stats['warnings'].append(
+                f"Skipped entries without category/subcategory: {df.loc[~assigned, 'id'].tolist()}"
+            )
+        df = df.loc[assigned]
+
         # Check for link issues (warnings only)
         warnings = self._validate_internal_links(df)
         if warnings:
@@ -66,25 +90,15 @@ class ObsidianExporter:
         # Create folder structure
         self._create_folder_structure(df)
         
-        # Group by subcategory for MOC creation
-        grouped = df.groupby(['category', 'subcategory'])
-        
-        for (category, subcategory), group in grouped:
-            # Create subcategory folder (sanitize names for filesystem)
-            sanitized_category = self._sanitize_filename(str(category), max_length=200)
-            sanitized_subcategory = self._sanitize_filename(str(subcategory), max_length=200)
-            
-            category_path = self.output_dir / sanitized_category
-            subcategory_path = category_path / sanitized_subcategory
+        grouped = dict(tuple(df.groupby(['category', 'subcategory'])))
+        for (category, subcategory), moc_path in self.moc_paths.items():
+            group = grouped.get((category, subcategory), df.iloc[:0])
+            subcategory_path = (self.output_dir / moc_path).parent
             subcategory_path.mkdir(parents=True, exist_ok=True)
-            
-            # Export individual entries
             for _, row in group.iterrows():
                 self._export_entry(row, subcategory_path)
-            
-            # Create MOC (using original subcategory name for content, sanitized for filename)
             self._create_moc(category, subcategory, group, subcategory_path)
-        
+
         logger.info(f"Export complete: {self.stats}")
         return self.stats
     
@@ -102,31 +116,102 @@ class ObsidianExporter:
         
         return errors
     
+    @staticmethod
+    def _read_links(value):
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return []
+        if isinstance(value, str):
+            value = json.loads(value) if value else []
+        if not isinstance(value, list) or any(
+            not isinstance(link, dict) or not isinstance(link.get('url'), str)
+            or not isinstance(link.get('text', ''), str) for link in value
+        ):
+            raise ValueError('Expected a list of link dictionaries with text and URL')
+        return value
+
+    def _moc_path(self, category, subcategory):
+        return '/'.join((self._sanitize_filename(str(category), 200),
+                         self._sanitize_filename(str(subcategory), 200),
+                         self._sanitize_filename(f'_MOC - {subcategory}', 97) + '.md'))
+
+    def _prepare_destinations(self, df):
+        sections = df.attrs.get('sections', [])
+        pairs = set(df[['category', 'subcategory']].dropna().itertuples(index=False, name=None))
+        pairs.update((s['category'], s['subcategory']) for s in sections if s['category'] is not None)
+        self.moc_paths = {pair: self._moc_path(*pair) for pair in sorted(pairs)}
+        if len(set(self.moc_paths.values())) != len(self.moc_paths):
+            self.stats['errors'].append('Category paths collide after filename sanitization; export stopped')
+        self.bookmark_paths = {}
+        for section in sections:
+            path = self.moc_paths.get((section['category'], section['subcategory']))
+            if path:
+                for bookmark in section['bookmarks']:
+                    self.bookmark_paths.setdefault(bookmark, []).append(path)
+        self.other_bookmarks = set(df.attrs.get('other_bookmarks', []))
+        self.partial_export = df.attrs.get('partial_export', False)
+
+    def _resolve_link(self, link):
+        target = unquote(link['url'][1:])
+        paths = self.bookmark_paths.get(target, [])
+        if len(paths) == 1 and target not in self.other_bookmarks:
+            return paths[0], None
+        if len(paths) > 1 or (paths and target in self.other_bookmarks):
+            return None, 'ambiguous bookmark'
+        if target in self.other_bookmarks:
+            return None, 'bookmark is not a category heading'
+        return None, 'missing or excluded from partial export' if self.partial_export else 'missing category bookmark'
+
     def _validate_internal_links(self, df: pd.DataFrame) -> List[str]:
-        """Check internal link validity."""
         warnings = []
-        all_subcategories = set(df['subcategory'].dropna().unique())
-        
         for idx, row in df.iterrows():
-            if 'links' in row.index:
-                links_value = row['links']
-                # Convert to string first to avoid array comparison issues
-                links_str = str(links_value) if not (isinstance(links_value, float) and pd.isna(links_value)) else '[]'
-                if links_str not in ['[]', 'nan', 'None', '']:
-                    try:
-                        links = json.loads(links_str)
-                        for link in links:
-                            if link.get('type') == 'internal':
-                                target = link.get('url', '').lstrip('#')
-                                if target and target not in all_subcategories:
-                                    warnings.append(
-                                        f"Row {idx}: Link target '{target}' not found in subcategories"
-                                    )
-                    except (json.JSONDecodeError, TypeError) as e:
-                        warnings.append(f"Row {idx}: Invalid links JSON: {e}")
-        
+            try:
+                links = self._read_links(row.get('links', []))
+            except (ValueError, TypeError) as exc:
+                warnings.append(f"Entry {row.get('id', idx)}: Invalid links data: {exc}")
+                continue
+            for link in links:
+                if link.get('type') == 'internal':
+                    path, reason = self._resolve_link(link)
+                    key = 'resolved_internal_links' if path else 'unresolved_internal_links'
+                    self.stats[key] += 1
+                    if not path:
+                        warnings.append(f"Entry {row.get('id', idx)}: {link['url']!r}: {reason}")
+        self.stats['total_links'] = self.stats['resolved_internal_links']
         return warnings
-    
+
+    def _format_link(self, link):
+        label = link.get('text') or link['url']
+        if link.get('type') == 'internal':
+            path, _ = self._resolve_link(link)
+            if not path:
+                return label
+            # Markdown links handle labels containing wikilink delimiters safely.
+            if any(c in path + label for c in '|[]#'):
+                from urllib.parse import quote
+                escaped = label.replace('\\', '\\\\').replace('[', '\\[').replace(']', '\\]')
+                return f"[{escaped}]({quote(path, safe='/')})"
+            return f"[[{path.removesuffix('.md')}|{label}]]"
+        label = label.replace('\\', '\\\\').replace('[', '\\[').replace(']', '\\]')
+        url = link['url'].replace(' ', '%20').replace('(', '%28').replace(')', '%29')
+        return f'[{label}]({url})' if url else label
+
+    def _inline_text(self, row, text):
+        raw = row.get('text', '')
+        offset = raw.find(text)
+        if offset < 0:
+            return text
+        try:
+            links = self._read_links(row.get('links', []))
+        except (ValueError, TypeError):
+            return text
+        for link in sorted(links, key=lambda item: item.get('start', -1), reverse=True):
+            start, end = link.get('start'), link.get('end')
+            if isinstance(start, int) and isinstance(end, int):
+                start, end = start - offset, end - offset
+                if 0 <= start <= end <= len(text) and text[start:end] == link.get('text'):
+                    text = text[:start] + self._format_link(link) + text[end:]
+        return text
+
     def _create_folder_structure(self, df: pd.DataFrame):
         """Create category and subcategory folders."""
         for category in df['category'].dropna().unique():
@@ -171,15 +256,13 @@ class ObsidianExporter:
         
         author = row.get('citation_author', 'Unknown')
         title = row.get('citation_title', 'Untitled')
-        quote_text = row.get('quote_text', row.get('text', ''))
+        quote_text = self._inline_text(row, row.get('quote_text', row.get('text', '')))
         
         # Citation block
         citation_block = self._format_citation(row)
         
         # Links
-        links_value = row.get('links', '[]')
-        links_str = str(links_value) if not (isinstance(links_value, float) and pd.isna(links_value)) else '[]'
-        links_block = self._convert_links(links_str)
+        links_block = self._convert_links(row.get('links', []))
         
         # Parent quote reference
         parent_ref = ""
@@ -226,15 +309,13 @@ class ObsidianExporter:
         """Generate markdown for reference entry."""
         frontmatter = self._format_frontmatter(row)
         text = row.get('text', '')
-        links_value = row.get('links', '[]')
-        links_str = str(links_value) if not (isinstance(links_value, float) and pd.isna(links_value)) else '[]'
-        links_block = self._convert_links(links_str)
+        links_block = self._convert_links(row.get('links', []))
         
         content = f"""{frontmatter}
 
 # Reference: {text[:80]}
 
-{text}
+{self._inline_text(row, text)}
 
 ## Links
 
@@ -250,15 +331,13 @@ class ObsidianExporter:
         """Generate markdown for general note."""
         frontmatter = self._format_frontmatter(row)
         text = row.get('text', '')
-        links_value = row.get('links', '[]')
-        links_str = str(links_value) if not (isinstance(links_value, float) and pd.isna(links_value)) else '[]'
-        links_block = self._convert_links(links_str)
+        links_block = self._convert_links(row.get('links', []))
         
         content = f"""{frontmatter}
 
 # {text[:80]}
 
-{text}
+{self._inline_text(row, text)}
 
 ## Links
 
@@ -273,8 +352,8 @@ class ObsidianExporter:
     def _create_moc(self, category: str, subcategory: str, 
                     group: pd.DataFrame, subcategory_path: Path):
         """Create Map of Content for subcategory."""
-        moc_filename = f"_MOC - {subcategory}.md"
-        moc_filename = self._sanitize_filename(moc_filename)
+        moc_filename = Path(self.moc_paths.get((category, subcategory),
+                                                self._moc_path(category, subcategory))).name
         moc_path = subcategory_path / moc_filename
         
         # Count by type
@@ -404,26 +483,19 @@ This MOC organizes {len(group)} entries related to {subcategory}.
         return '\n'.join(lines)
     
     def _find_related_subcategories(self, group: pd.DataFrame) -> str:
-        """Extract related subcategories from internal links."""
-        related = set()
-        
+        related = {}
         for _, row in group.iterrows():
-            links_json = row.get('links', '[]')
-            # Convert to string first to avoid array comparison issues
-            links_json_str = str(links_json) if not (isinstance(links_json, float) and pd.isna(links_json)) else '[]'
-            if links_json_str not in ['[]', 'nan', 'None', '']:
-                try:
-                    links = json.loads(links_json_str)
-                    for link in links:
-                        if link.get('type') == 'internal':
-                            target = link.get('url', '').lstrip('#')
-                            if target:
-                                related.add(target)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        
-        return '\n'.join([f"- [[{sub}]]" for sub in sorted(related)]) if related else "*No related subcategories*"
-    
+            try:
+                links = self._read_links(row.get('links', []))
+            except (ValueError, TypeError):
+                continue
+            for link in links:
+                if link.get('type') == 'internal':
+                    path, _ = self._resolve_link(link)
+                    if path:
+                        related[path] = self._format_link(link)
+        return '\n'.join(f'- {related[path]}' for path in sorted(related)) if related else '*No related subcategories*'
+
     def _format_frontmatter(self, row: pd.Series) -> str:
         """Generate YAML frontmatter."""
         lines = ["---"]
@@ -487,37 +559,17 @@ This MOC organizes {len(group)} entries related to {subcategory}.
             if source:
                 lines.append(f"**Source:** {source}")
             if raw:
-                lines.append(f"**Full Citation:** {raw}")
+                lines.append(f"**Full Citation:** {self._inline_text(row, raw)}")
         
         return '\n'.join(lines) if lines else "*No citation available*"
     
-    def _convert_links(self, links_json: str) -> str:
-        """Convert links JSON to markdown."""
-        if pd.isna(links_json) or links_json == '[]' or links_json == '':
-            return "*No links*"
-        
+    def _convert_links(self, value) -> str:
         try:
-            links = json.loads(links_json)
-        except (json.JSONDecodeError, TypeError):
-            return "*Invalid links data*"
-        
-        formatted = []
-        
-        for link in links:
-            if link.get('type') == 'internal':
-                # Remove '#' and create wikilink
-                target = link.get('url', '').lstrip('#')
-                if target:
-                    formatted.append(f"- [[{target}]]")
-                    self.stats['total_links'] += 1
-            else:
-                text = link.get('text') or link.get('url', '')
-                url = link.get('url', '')
-                if url:
-                    formatted.append(f"- [{text}]({url})")
-        
-        return '\n'.join(formatted) if formatted else "*No links*"
-    
+            links = self._read_links(value)
+        except (ValueError, TypeError):
+            return '*Invalid links data*'
+        return '\n'.join('- ' + self._format_link(link) for link in links) if links else '*No links*'
+
     def _sanitize_filename(self, text: str, max_length: int = 100) -> str:
         """Sanitize text for use in filenames."""
         # Replace invalid chars with dash

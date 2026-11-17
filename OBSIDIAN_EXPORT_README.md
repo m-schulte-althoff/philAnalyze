@@ -22,11 +22,11 @@ The Obsidian Export module transforms preprocessed philosophical notes from a Da
 ### Basic Export
 
 ```python
-import pandas as pd
+from data_model import load_odt_data, preprocess_philosophical_data
 from obsidian_export import export_to_markdown
 
-# Load preprocessed data
-df = pd.read_csv('output/test/preprocessed_data.csv')
+# Keep bookmark metadata and link positions through the in-memory pipeline.
+df = preprocess_philosophical_data(load_odt_data('data/Phil.odt'))
 
 # Export to Obsidian vault
 stats = export_to_markdown(df, 'output/obsidian_vault')
@@ -34,7 +34,8 @@ stats = export_to_markdown(df, 'output/obsidian_vault')
 # View statistics
 print(f"Files created: {stats['files_created']}")
 print(f"MOCs created: {stats['mocs_created']}")
-print(f"Total links: {stats['total_links']}")
+print(f"Resolved internal links: {stats['resolved_internal_links']}")
+print(f"Unresolved internal links: {stats['unresolved_internal_links']}")
 ```
 
 ### Using the Class Directly
@@ -79,9 +80,50 @@ The module expects a pandas DataFrame with the following columns:
 - `citation_title`: Work title
 - `citation_source`: Publication source
 - `citation_raw`: Full citation string
-- `links`: JSON array of link objects
+- `links`: Native list of link dictionaries (`text`, `url`, `type`, `start`, `end`); JSON arrays are also accepted
 - `has_citation`: Boolean flag
 - `has_links`: Boolean flag
+
+## Internal ODT links
+
+Actual ODT hyperlinks are preserved inline, regardless of whether they follow
+`(vgl.)`, `(Vgl.)`, `Vgl.`, or other wording. Unlinked mentions stay unlinked.
+Nested spans contribute their complete visible text; source font styling is not
+translated to Markdown. Link positions distinguish linked words from identical
+unlinked words, including in merged continuation paragraphs.
+
+Bookmarks on subcategory headings resolve to the actual exported MOC path:
+`[[Wirtschaft/Analogien/_MOC - Analogien|Analogien]]`. The same destination mapping
+is used in each entry's Links section and in MOC related-category lists. External
+hyperlinks remain Markdown links. Categories without entries also get MOCs.
+Filename collisions stop the export before files are written.
+
+The loader retains heading/bookmark metadata in `DataFrame.attrs['sections']`,
+non-heading bookmarks in `other_bookmarks`, and the sampling flag in
+`partial_export`. Preprocessing preserves these attributes. Use the in-memory
+ODT pipeline above: plain CSV round-trips do **not** preserve these attributes.
+Existing JSON link arrays can still be rendered, but internal targets require
+bookmark metadata and inline placement requires offsets relative to `text`.
+The exporter does not guess targets from labels or category names.
+
+Missing, ambiguous, non-category, or unavailable targets remain visible text.
+`stats['warnings']` identifies each source entry and original target. Sampling
+can leave forward targets outside the export; these are reported as missing or
+excluded from the partial export. `resolved_internal_links` and
+`unresolved_internal_links` count source link occurrences in exported entries,
+not duplicated renderings in Links/MOC sections. `total_links` is the resolved
+internal-link count. Navigation links in the source table of contents are not
+included in these counts. Entries without a category/subcategory cannot be placed
+in the existing folder structure; `skipped_entries` and a warning with their IDs
+make this existing export limitation explicit.
+
+To check the conversion without touching an existing vault, export into a
+`tempfile.TemporaryDirectory()`. The integration tests construct a small real
+ODT fixture and exercise extraction through final Markdown output:
+
+```bash
+.venv/bin/python -m pytest tests/test_internal_links.py
+```
 
 ## Output Structure
 

@@ -11,15 +11,17 @@ This module handles all data-related operations:
 
 import logging
 import re
+import xml.etree.ElementTree as ET
 import pandas as pd
 from odfdo import Document
+from urllib.parse import unquote
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Regular expressions for parsing
 CITATION_PATTERN = re.compile(r'\[([^\]]+)\]$')  # Match citation in square brackets at end
-QUOTE_MARKER_PATTERN = re.compile(r'^[\t\s]*([°^~+\-])\s+(.+)$')  # Match quote markers with indentation
+QUOTE_MARKER_PATTERN = re.compile(r'^[\t\s]*([°^~+\-])\s+(.+)$', re.DOTALL)  # Match quote markers with indentation
 LINK_REFERENCE_PATTERN = re.compile(r'\(vgl\.\)', re.IGNORECASE)  # Match (vgl.) link indicators
 
 
@@ -256,7 +258,7 @@ def is_subcategory_heading(paragraph, text):
     # Type 1: ToC entries with hyperlinks (entire text is linked)
     # Type 2: Content section headers with bookmark (may or may not have link)
     has_link = '<text:a' in xml
-    has_bookmark = '<text:bookmark-start' in xml
+    has_bookmark = '<text:bookmark-start' in xml or '<text:bookmark ' in xml
     
     if has_link and not has_bookmark:
         # Potential ToC entry: hyperlink to bookmark (no bookmark in this paragraph)
@@ -292,71 +294,44 @@ def is_subcategory_heading(paragraph, text):
     return False
 
 
+def paragraph_content(paragraph):
+    """Read text and link offsets together so repeated labels stay unambiguous."""
+    root = ET.fromstring(paragraph.serialize(with_ns=True))
+    ns = '{urn:oasis:names:tc:opendocument:xmlns:text:1.0}'
+    text, links, bookmarks = '', [], []
+
+    def walk(node):
+        nonlocal text
+        start = len(text)
+        if node.tag in (ns + 'bookmark', ns + 'bookmark-start'):
+            bookmarks.append(node.get(ns + 'name'))
+        if node.tag == ns + 'tab':
+            text += '\t'
+        elif node.tag == ns + 'line-break':
+            text += '\n'
+        elif node.tag == ns + 's':
+            text += ' ' * int(node.get(ns + 'c', '1'))
+        else:
+            text += node.text or ''
+            for child in node:
+                walk(child)
+                text += child.tail or ''
+        if node.tag == ns + 'a':
+            url = node.get('{http://www.w3.org/1999/xlink}href', '')
+            links.append({'text': text[start:], 'url': url,
+                          'type': 'internal' if url.startswith('#') else 'external',
+                          'start': start, 'end': len(text)})
+
+    walk(root)
+    return text, links, bookmarks
+
+
 def get_text_with_tabs(paragraph):
-    """
-    Extract text from paragraph while preserving tab characters.
-    
-    The standard paragraph.text property strips out <text:tab> elements.
-    This function reconstructs the text with \t characters where tabs appear.
-    
-    Args:
-        paragraph: ODT paragraph object
-        
-    Returns:
-        str: Text content with tabs preserved as \t characters
-    """
-    
-    # Get the XML representation
-    xml = paragraph.serialize()
-    
-    # Parse XML to reconstruct text with tabs
-    # This is a simple approach that replaces <text:tab/> with \t
-    import re
-    
-    try:
-        # First, replace <text:tab.../> with \t
-        content = re.sub(r'<text:tab[^/>]*/?>', '\t', xml)
-        
-        # Then strip all other XML tags to get just text
-        content = re.sub(r'<[^>]+>', '', content)
-        
-        # Unescape XML entities
-        content = content.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
-        
-        return content
-        
-    except Exception:
-        # Fallback to text_recursive which handles nested spans
-        return paragraph.text_recursive if hasattr(paragraph, 'text_recursive') else ''
+    return paragraph_content(paragraph)[0]
 
 
 def extract_links(paragraph):
-    """
-    Extract hyperlinks from a paragraph.
-    
-    Args:
-        paragraph: ODT paragraph object
-        
-    Returns:
-        list: List of link dictionaries with 'text', 'url', and 'type'
-    """
-    
-    links = []
-    
-    try:
-        # Extract links from paragraph
-        # In odfdo, links are separate elements
-        for link in paragraph.get_links():
-            link_info = {
-                'text': link.text if hasattr(link, 'text') else '',
-                'url': link.url if hasattr(link, 'url') else '',
-                'type': 'internal' if (hasattr(link, 'url') and link.url.startswith('#')) else 'external'
-            }
-            links.append(link_info)
-    except Exception:
-        pass
-    
-    return links
+    return paragraph_content(paragraph)[1]
 
 
 def load_odt_data(file_path, max_pages=None):
@@ -424,14 +399,18 @@ def load_odt_data(file_path, max_pages=None):
         
         # Build a mapping of subcategory -> category from the TOC
         subcategory_to_category = {}
+        bookmark_to_category = {}
+        sections = []
+        other_bookmarks = []
         toc_current_category = None
         
         for idx, paragraph in enumerate(paragraphs, start=1):
             # Use the new function to get text WITH tabs preserved
-            text = get_text_with_tabs(paragraph)
+            text, links, bookmarks = paragraph_content(paragraph)
             
             # Skip empty paragraphs
             if not text or text.strip() == '':
+                other_bookmarks.extend(bookmarks)
                 continue
             
             paragraph_count += 1
@@ -442,11 +421,16 @@ def load_odt_data(file_path, max_pages=None):
                            max_pages, paragraph_count-1)
                 break
             
+            other_bookmarks.extend(bookmarks)
+
             # Estimate page number
             estimated_page = ((paragraph_count - 1) // PARAGRAPHS_PER_PAGE) + 1
             
             # Extract links
-            links = extract_links(paragraph)
+            leading = len(text) - len(text.lstrip())
+            for link in links:
+                link['start'] -= leading
+                link['end'] -= leading
             
             # Initialize record
             record = {
@@ -472,18 +456,26 @@ def load_odt_data(file_path, max_pages=None):
                 # Check for category headings in TOC
                 if is_category_heading(paragraph, text) and '\t' not in text:
                     toc_current_category = text.strip()
+                    current_category = toc_current_category
                     record['type'] = 'toc'
                     data_records.append(record)
                     continue
                 
                 # TOC subcategory entries have links but no tabs
                 # They are short lines (subcategory names) with internal links
-                if len(links) > 0 and '\t' not in text and len(text.strip()) < 100:
+                links_elsewhere = any(
+                    link['type'] == 'internal' and unquote(link['url'][1:]) not in bookmarks
+                    for link in links
+                )
+                if links_elsewhere and '\t' not in text and len(text.strip()) < 100:
                     # This is likely a TOC subcategory entry
                     toc_subcat_name = text.strip()
                     # Map this subcategory to its category
                     if toc_current_category:
-                        subcategory_to_category[toc_subcat_name] = toc_current_category
+                        subcategory_to_category.setdefault(toc_subcat_name, set()).add(toc_current_category)
+                        for link in links:
+                            if link['type'] == 'internal':
+                                bookmark_to_category.setdefault(unquote(link['url'][1:]), set()).add(toc_current_category)
                     record['type'] = 'toc'
                     record['text'] = toc_subcat_name
                     data_records.append(record)
@@ -511,11 +503,20 @@ def load_odt_data(file_path, max_pages=None):
             if is_subcategory_heading(paragraph, text):
                 current_subcategory = text.strip()
                 # Look up the correct category from the TOC mapping
-                if current_subcategory in subcategory_to_category:
-                    current_category = subcategory_to_category[current_subcategory]
+                candidates = set().union(*(bookmark_to_category.get(b, set()) for b in bookmarks))
+                if not candidates:
+                    candidates = subcategory_to_category.get(current_subcategory, set())
+                if len(candidates) == 1:
+                    current_category = next(iter(candidates))
+                elif len(candidates) > 1:
+                    current_category = None
+                if bookmarks:
+                    del other_bookmarks[-len(bookmarks):]
                 record['type'] = 'subcategory'
                 record['category'] = current_category
                 record['subcategory'] = current_subcategory
+                sections.append({'category': current_category, 'subcategory': current_subcategory,
+                                 'bookmarks': bookmarks})
                 data_records.append(record)
                 continue
             
@@ -581,6 +582,10 @@ def load_odt_data(file_path, max_pages=None):
                             break  # This would be a quote, stop merging
                     
                     # This is a continuation - merge it
+                    offset = len(full_raw_text) + 1
+                    record['links'].extend({**link, 'start': link['start'] + offset,
+                                            'end': link['end'] + offset}
+                                           for link in next_record['links'])
                     full_text += ' ' + next_text.strip()
                     full_raw_text += ' ' + next_text.strip()
                     j += 1
@@ -619,6 +624,9 @@ def load_odt_data(file_path, max_pages=None):
         
         # Convert to DataFrame
         df = pd.DataFrame(merged_records)
+        df.attrs['sections'] = sections
+        df.attrs['other_bookmarks'] = other_bookmarks
+        df.attrs['partial_export'] = max_pages is not None
         
         if max_pages is not None:
             logger.info("Successfully loaded %d paragraphs from first ~%d pages of %s",
@@ -672,6 +680,10 @@ def preprocess_philosophical_data(data):
         logger.warning("No data to preprocess.")
         return data
     
+    metadata = data.attrs
+    data = data.copy(deep=False)
+    data.attrs = {}  # Avoid copying the bookmark catalog in every iterrows() result.
+
     # Add unique ID column BEFORE filtering
     data['id'] = range(1, len(data) + 1)
     
@@ -739,6 +751,7 @@ def preprocess_philosophical_data(data):
     # Filter to keep only quote-like entries (quote, reference, own remark)
     data = data[data['type'].isin(['quote', 'reference', 'own remark'])].copy()
     logger.info("After filtering: %d quote records remaining", len(data))
+    data.attrs = metadata
     
     return data
 
